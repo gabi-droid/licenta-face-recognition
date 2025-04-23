@@ -282,7 +282,7 @@ def print_threshold_statistics(df, threshold):
         print(f"{emotion:10}: {dominant_emotions[emotion]:,} imagini ({dominant_emotions[emotion]/len(strong_cases)*100:.1f}%)")
 
 def main():
-    base_path = r"C:\Users\gabri\OneDrive\Desktop\ProiectLicentaFerPlus\FERPlus"
+    base_path = r"C:\Users\gabri\licenta-face-recognition"
     path_to_ferplus = os.path.join(base_path, "fer2013new.csv")
     
     try:
