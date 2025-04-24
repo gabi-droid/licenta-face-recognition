@@ -34,24 +34,6 @@ def get_emotion_columns():
     return ['neutral', 'happiness', 'surprise', 'sadness', 
             'anger', 'disgust', 'fear', 'contempt']
 
-def print_basic_stats(df):
-    """
-    Afișează statistici de bază despre dataset
-    """
-    print("=== Statistici de bază ===")
-    print(f"Număr total de imagini: {len(df)}")
-    print("\nDistribuția pe seturi:")
-    print(df['Usage'].value_counts())
-    
-    emotion_columns = ['neutral', 'happiness', 'surprise', 'sadness', 
-                      'anger', 'disgust', 'fear', 'contempt']
-    
-    print("\nNumăr total de voturi per emoție:")
-    total_votes = df[emotion_columns + ['unknown', 'NF']].sum()
-    print(total_votes)
-    
-    print("\nProcent din totalul voturilor:")
-    print((total_votes / total_votes.sum() * 100).round(2))
 
 def analyze_pure_votes(df):
     """
@@ -169,21 +151,6 @@ def analyze_threshold_based(df, strong_threshold=0.7):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Ajustare pentru titlul principal
     plt.savefig('fer_plus_categories_strong.png', dpi=300, bbox_inches='tight')
     plt.show()
-    
-    # A doua figură: Combinații și intensitate
-    plt.figure(figsize=(15, 7))
-    plt.suptitle('Analiza Combinațiilor Emoțiilor', fontsize=16)
-    
-    # 3. Heatmap pentru combinații de emoții în cazurile mixed
-    plt.subplot(1, 1, 1)
-    plot_emotion_combinations(df, strong_threshold)
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Ajustare pentru titlul principal
-    plt.savefig('fer_plus_combinations_intensity.png', dpi=300, bbox_inches='tight')
-    plt.show()
-    
-    # Afișăm statisticile detaliate (rămâne la fel)
-    print_threshold_statistics(df, strong_threshold)
 
 def categorize_images(df, threshold=0.7):
     """
@@ -260,27 +227,6 @@ def plot_emotion_combinations(df, threshold):
     plt.xticks(rotation=45, ha='right')
     plt.yticks(rotation=0)
 
-def print_threshold_statistics(df, threshold):
-    """
-    Afișează statistici detaliate despre categorii
-    """
-    categories, percentages = categorize_images(df, threshold)
-    
-    print(f"\n=== Statistici pentru Prag {threshold*100}% ===")
-    
-    # Statistici generale
-    print("\nDistribuția categoriilor:")
-    category_counts = categories.value_counts()
-    for category in category_counts.index:
-        print(f"{category:10}: {category_counts[category]:,} imagini ({category_counts[category]/len(df)*100:.1f}%)")
-    
-    # Statistici pentru cazurile strong
-    print("\nEmoții dominante în cazurile strong:")
-    strong_cases = percentages[categories == 'strong']
-    dominant_emotions = strong_cases.idxmax(axis=1).value_counts()
-    for emotion in dominant_emotions.index:
-        print(f"{emotion:10}: {dominant_emotions[emotion]:,} imagini ({dominant_emotions[emotion]/len(strong_cases)*100:.1f}%)")
-
 def main():
     base_path = r"C:\Users\gabri\licenta-face-recognition"
     path_to_ferplus = os.path.join(base_path, "fer2013new.csv")
@@ -289,17 +235,12 @@ def main():
         # Încărcăm datele
         df = load_data(path_to_ferplus)
         
-        # Afișăm statisticile de bază
-        print_basic_stats(df)
-        
         # Salvăm DataFrame-ul procesat pentru utilizare ulterioară
         df.to_csv('processed_fer_data.csv', index=False)
         
         # Analizăm datele bazate pe praguri
         analyze_threshold_based(df, strong_threshold=0.7)
-        
-        print("\nDatele au fost încărcate și procesate cu succes!")
-        
+                
     except FileNotFoundError:
         print(f"Eroare: Nu s-a putut găsi fișierul la calea: {path_to_ferplus}")
     except Exception as e:
