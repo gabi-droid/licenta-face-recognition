@@ -18,9 +18,9 @@ def main():
     parent_path = os.path.dirname(base_path)
     
     # Căile către fișiere
-    fer_path = os.path.join(parent_path, "fer2013new.csv")
-    raf_train_path = os.path.join(parent_path, "raf-db", "train_labels.csv")
-    raf_test_path = os.path.join(parent_path, "raf-db", "test_labels.csv")
+    fer_path = os.path.join(parent_path, "datasets", "fer-plus", "processed.csv")
+    raf_train_path = os.path.join(parent_path, "datasets", "raf-db", "train_labels.csv")
+    raf_test_path = os.path.join(parent_path, "datasets", "raf-db", "test_labels.csv")
     
     try:
         # Încărcăm datele FER+

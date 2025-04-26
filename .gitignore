@@ -1,8 +1,16 @@
-fer2013.csv
+# Dataset files
+datasets/fer-plus/raw.csv
+datasets/fer-plus/processed.csv
+datasets/raf-db/*.jpg
+datasets/raf-db/**/*.jpg
+datasets/raf-db/aligned
+datasets/raf-db/Image/aligned
 
-# Ignore all files in raf-db directory
-raf-db/*.jpg
-raf-db/**/*.jpg
+# Generated images
+*.png
+*.jpg
+*.jpeg
+*.gif
 
 # Python
 __pycache__/
@@ -26,6 +34,11 @@ wheels/
 .installed.cfg
 *.egg
 
+# Virtual Environment
+venv/
+env/
+ENV/
+
 # IDE
 .idea/
 .vscode/
@@ -35,3 +48,14 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Temporary files
+*.tmp
+*.temp
+*~
