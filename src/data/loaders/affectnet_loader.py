@@ -15,11 +15,23 @@ def load_affectnet_data(labels_path):
     # Încărcăm datele
     df = pd.read_csv(labels_path)
     
-    # Redenumim coloana pentru consistență cu celelalte seturi de date
-    df['emotion_name'] = df['label']
+    # Mapăm denumirile emoțiilor la formatul standard
+    emotion_map = {
+        'happy': 'happiness',
+        'sad': 'sadness',
+        'anger': 'anger',
+        'neutral': 'neutral',
+        'surprise': 'surprise',
+        'fear': 'fear',
+        'disgust': 'disgust',
+        'contempt': 'contempt'
+    }
     
-    # Lista emoțiilor disponibile
-    emotion_columns = df['emotion_name'].unique().tolist()
+    # Convertim etichetele la formatul standard
+    df['emotion_name'] = df['label'].map(emotion_map)
+    
+    # Lista emoțiilor standardizate
+    emotion_columns = list(emotion_map.values())
     
     # Creăm coloane one-hot pentru fiecare emoție
     for emotion in emotion_columns:
