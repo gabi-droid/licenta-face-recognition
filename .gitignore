@@ -1,6 +1,5 @@
 # Dataset files
 datasets/fer-plus/raw.csv
-datasets/fer-plus/processed.csv
 datasets/raf-db/*.jpg
 datasets/raf-db/**/*.jpg
 datasets/raf-db/aligned
