@@ -29,10 +29,19 @@ def count_images(directory: pathlib.Path) -> dict[str, int]:
             elif cls == "sadness":
                 source_cls = "sad"
         
+        # Verificăm ambele variante ale numelui pentru AffectNet
         cls_dir = directory/source_cls
+        if not cls_dir.exists() and "affectnet" in str(directory).lower():
+            if cls == "happiness":
+                cls_dir = directory/"happy"
+            elif cls == "sadness":
+                cls_dir = directory/"sad"
+        
         if cls_dir.exists():
             counts[cls] = len([p for p in cls_dir.iterdir() 
                              if p.suffix.lower() in {".jpg", ".jpeg", ".png"}])
+        else:
+            print(f"  ⚠️ Directorul {cls_dir} nu există")
     return counts
 
 def plot_distribution(counts: dict[str, int], title: str):

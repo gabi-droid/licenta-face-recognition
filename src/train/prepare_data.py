@@ -11,7 +11,7 @@ COMMON_CLASSES: List[str] = [
     "anger", "contempt", "disgust", "fear",
     "happiness", "neutral", "sadness", "surprise",
 ]
-IMG_SIZE, BATCH_SIZE = (224, 224), 128
+IMG_SIZE, BATCH_SIZE = (120, 120), 128
 TRAIN_LIMIT = 1000
 TEST_LIMIT = 200
 
@@ -82,6 +82,7 @@ def prepare_dataset(
         
         # Copiază imaginile
         count = 0
+        target_cls_dir = target_dir/cls  # Folosim numele standard pentru directorul țintă
         for img_path in tqdm(images, desc=f"  Copiere {cls}", leave=False):
             try:
                 # Verifică și convertește imaginea
@@ -89,8 +90,11 @@ def prepare_dataset(
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     
+                    # Resize la 120x120
+                    img = img.resize(IMG_SIZE, Image.Resampling.LANCZOS)
+                    
                     # Salvează imaginea
-                    target_path = target_dir/cls/f"{cls}_{count:04d}.jpg"
+                    target_path = target_cls_dir/f"{cls}_{count:04d}.jpg"
                     img.save(target_path, "JPEG", quality=95)
                     count += 1
             except Exception as e:

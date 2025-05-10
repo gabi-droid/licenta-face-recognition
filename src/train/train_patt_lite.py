@@ -13,6 +13,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications.mobilenet import preprocess_input
 
 # ----------------------------------------------------------------------------
 # CONFIG
@@ -23,7 +24,7 @@ COMMON_CLASSES: List[str] = [
 ]
 IMG_SIZE, BATCH_SIZE = (224, 224), 8
 
-EPOCHS_HEAD, EPOCHS_FINE = 100, 500
+EPOCHS_HEAD, EPOCHS_FINE = 30, 30
 LR_HEAD,   LR_FINE      = 1e-3, 1e-5
 DROPOUT_HEAD, DROPOUT_FINE = 0.10, 0.20
 PATIENCE_ES, PATIENCE_LR, MIN_LR = 5, 3, 1e-6
@@ -55,11 +56,10 @@ print(f"   Numărul replicilor: {strategy.num_replicas_in_sync}")
 # ----------------------------------------------------------------------------
 
 def build_datagens():
-    aug_train = ImageDataGenerator(rescale=1./255, horizontal_flip=True, rotation_range=10,
-                                   width_shift_range=0.1, height_shift_range=0.1,
-                                   preprocessing_function=lambda x: tf.image.resize(x, IMG_SIZE))
-    aug_eval  = ImageDataGenerator(rescale=1./255,
-                                   preprocessing_function=lambda x: tf.image.resize(x, IMG_SIZE))
+    aug_train = ImageDataGenerator(preprocessing_function=lambda x: tf.image.resize(preprocess_input(x), IMG_SIZE),
+                                   horizontal_flip=True, rotation_range=10,
+                                   width_shift_range=0.1, height_shift_range=0.1)
+    aug_eval  = ImageDataGenerator(preprocessing_function=lambda x: tf.image.resize(preprocess_input(x), IMG_SIZE))
 
     val_gen = aug_eval.flow_from_directory(TRUNCATED_DIR/"fer-plus"/"val", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
                                            classes=COMMON_CLASSES, class_mode="categorical", shuffle=False)
@@ -105,23 +105,23 @@ def class_weights(gens):
 def build_model():
     """Construiește modelul Patt‑Lite cu MobileNet backbone"""
     inputs = keras.Input(shape=(*IMG_SIZE, 3), name="input")
-    x = keras.layers.Rescaling(1./255)(inputs)
+    x = keras.layers.experimental.preprocessing.Resizing(224, 224, name="resize")(inputs)
 
     backbone = keras.applications.MobileNet(
-        input_shape=(*IMG_SIZE, 3), include_top=False, weights="imagenet")
+        input_shape=(224, 224, 3), include_top=False, weights="imagenet")
     backbone._name = "mobilenet_backbone"
     backbone.trainable = False
 
     x = backbone(x, training=False)
-    x = keras.layers.SeparableConv2D(256, 3, 3, padding="same", activation="relu")(x)
-    x = keras.layers.SeparableConv2D(256, 3, 3, padding="same", activation="relu")(x)
-    x = keras.layers.Conv2D(256, 1, activation="relu")(x)
+    x = keras.layers.SeparableConv2D(256, kernel_size=4, strides=4, padding="same", activation="relu")(x)
+    x = keras.layers.SeparableConv2D(256, kernel_size=2, strides=2, padding="valid", activation="relu")(x)
+    x = keras.layers.Conv2D(256, kernel_size=1, strides=1, padding="valid", activation="relu")(x)
     x = keras.layers.GlobalAveragePooling2D()(x)
     x = keras.layers.Dropout(DROPOUT_HEAD)(x)
     x = keras.layers.Dense(128, activation="relu")(x); x = keras.layers.BatchNormalization()(x)
     x = keras.layers.Dense(64, activation="relu")(x);  x = keras.layers.BatchNormalization()(x)
     x = keras.layers.Attention(use_scale=True)([x, x])
-    outputs = keras.layers.Dense(len(COMMON_CLASSES), activation="softmax")(x)
+    outputs = keras.layers.Dense(len(COMMON_CLASSES), activation="softmax", dtype="float32")(x)
 
     model = keras.Model(inputs, outputs, name="patt_lite")
     print("Model summary:")
@@ -141,12 +141,23 @@ def train():
         model.compile(optimizer=keras.optimizers.Adam(learning_rate=LR_HEAD, global_clipnorm=3.0),
                       loss="categorical_crossentropy", metrics=["accuracy"])
 
+    # Configurare TensorBoard
+    log_dir = f"logs/{datetime.datetime.now():%Y%m%d-%H%M%S}"
+    tensorboard_callback = keras.callbacks.TensorBoard(
+        log_dir=log_dir,
+        histogram_freq=1,
+        write_graph=True,
+        write_images=True,
+        update_freq='epoch',
+        profile_batch=2
+    )
+
     cb = [
         keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=PATIENCE_ES, 
                                     min_delta=ES_LR_MIN_DELTA, restore_best_weights=True),
         keras.callbacks.ReduceLROnPlateau(monitor="val_accuracy", patience=PATIENCE_LR,
                                         min_delta=ES_LR_MIN_DELTA, min_lr=MIN_LR, verbose=1),
-        keras.callbacks.TensorBoard(log_dir=f"logs/{datetime.datetime.now():%Y%m%d-%H%M%S}")
+        tensorboard_callback
     ]
 
     print("\n→ Faza 1: head…")
@@ -169,10 +180,21 @@ def train():
         model.compile(optimizer=keras.optimizers.Adam(learning_rate=LR_FINE, global_clipnorm=3.0),
                       loss="categorical_crossentropy", metrics=["accuracy"])
 
+    # Configurare TensorBoard pentru fine-tuning
+    log_dir_ft = f"logs/{datetime.datetime.now():%Y%m%d-%H%M%S}_ft"
+    tensorboard_callback_ft = keras.callbacks.TensorBoard(
+        log_dir=log_dir_ft,
+        histogram_freq=1,
+        write_graph=True,
+        write_images=True,
+        update_freq='epoch',
+        profile_batch=2
+    )
+
     cb = [
         keras.callbacks.EarlyStopping(monitor="accuracy", min_delta=ES_LR_MIN_DELTA, 
                                     patience=PATIENCE_ES, restore_best_weights=True),
-        keras.callbacks.TensorBoard(log_dir=f"logs/{datetime.datetime.now():%Y%m%d-%H%M%S}")
+        tensorboard_callback_ft
     ]
 
     print("\n→ Faza 2: fine‑tune…")
