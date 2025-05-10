@@ -8,12 +8,18 @@
 from __future__ import annotations
 import os, shutil, datetime, random, pathlib
 from typing import Tuple, List, Dict
+from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.mobilenet import preprocess_input
+import logging
+
+# Configurare logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------------
 # CONFIG
@@ -24,8 +30,10 @@ COMMON_CLASSES: List[str] = [
 ]
 IMG_SIZE, BATCH_SIZE = (224, 224), 8
 
-EPOCHS_HEAD, EPOCHS_FINE = 30, 30
-LR_HEAD,   LR_FINE      = 1e-3, 1e-5
+# Număr de epoci pentru fiecare fază
+EPOCHS_HEAD = 10  # antrenare head
+EPOCHS_FINE = 20  # fine-tuning
+LR_HEAD,   LR_FINE      = 3e-4, 1e-5
 DROPOUT_HEAD, DROPOUT_FINE = 0.10, 0.20
 PATIENCE_ES, PATIENCE_LR, MIN_LR = 5, 3, 1e-6
 ES_LR_MIN_DELTA = 0.003
@@ -44,9 +52,9 @@ for g in tf.config.list_physical_devices("GPU"):
 print(f"   {len(tf.config.list_physical_devices('GPU'))} GPU găsit(e).")
 
 # Enable mixed precision
-policy = tf.keras.mixed_precision.Policy('mixed_float16')
-tf.keras.mixed_precision.set_global_policy(policy)
-print(f"   Mixed precision enabled: {policy.name}")
+# policy = tf.keras.mixed_precision.Policy('mixed_float16')
+# tf.keras.mixed_precision.set_global_policy(policy)
+# print(f"   Mixed precision enabled: {policy.name}")
 
 strategy = tf.distribute.MirroredStrategy()
 print(f"   Numărul replicilor: {strategy.num_replicas_in_sync}")
@@ -55,41 +63,113 @@ print(f"   Numărul replicilor: {strategy.num_replicas_in_sync}")
 # 2.  Datagens
 # ----------------------------------------------------------------------------
 
-def build_datagens():
-    aug_train = ImageDataGenerator(preprocessing_function=lambda x: tf.image.resize(preprocess_input(x), IMG_SIZE),
-                                   horizontal_flip=True, rotation_range=10,
-                                   width_shift_range=0.1, height_shift_range=0.1)
-    aug_eval  = ImageDataGenerator(preprocessing_function=lambda x: tf.image.resize(preprocess_input(x), IMG_SIZE))
+def load_preprocess(path):
+    """Încarcă și preprocesează o imagine"""
+    img = tf.io.read_file(path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.resize(img, IMG_SIZE)
+    img = preprocess_input(img)
+    return img
 
-    val_gen = aug_eval.flow_from_directory(TRUNCATED_DIR/"fer-plus"/"val", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                           classes=COMMON_CLASSES, class_mode="categorical", shuffle=False)
+def make_dataset(generator):
+    """Creează un dataset tf.data dintr-un generator"""
+    ds = tf.data.Dataset.from_tensor_slices(generator.filepaths)
+
+    # Construim un StaticHashTable pentru class_indices
+    keys = tf.constant(list(generator.class_indices.keys()))
+    values = tf.constant(list(generator.class_indices.values()), dtype=tf.int64)
+    table = tf.lookup.StaticHashTable(
+        tf.lookup.KeyValueTensorInitializer(keys, values), default_value=-1)
+
+    def process_path(path):
+        # Extragem numele directorului părinte
+        parts = tf.strings.split(path, os.sep)
+        parent_name = parts[-2]
+        img = load_preprocess(path)
+        label = table.lookup(parent_name)
+        return img, label
+
+    ds = ds.map(process_path)
+    return ds
+
+def build_datagens():
+    """Construiește generatoarele de date și dataset-urile echilibrate"""
+    aug_train = ImageDataGenerator(horizontal_flip=True, rotation_range=10,
+                                   width_shift_range=0.1, height_shift_range=0.1)
+    aug_eval  = ImageDataGenerator()
+
+    # Generatoare pentru validare și test
+    val_gen_fer = aug_eval.flow_from_directory(TRUNCATED_DIR/"fer-plus"/"val", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
+                                           classes=COMMON_CLASSES, class_mode="sparse", shuffle=False)
+    val_gen_raf = aug_eval.flow_from_directory(TRUNCATED_DIR/"rafdb"/"val", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
+                                           classes=COMMON_CLASSES, class_mode="sparse", shuffle=False)
+    val_gen_aff = aug_eval.flow_from_directory(TRUNCATED_DIR/"affectnet"/"val", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
+                                           classes=COMMON_CLASSES, class_mode="sparse", shuffle=False)
+    
+    # Creăm un set de validare determinist din toate seturile
+    val_ds_fer = make_dataset(val_gen_fer)
+    val_ds_raf = make_dataset(val_gen_raf)
+    val_ds_aff = make_dataset(val_gen_aff)
+
+    # Concatenăm în lanț
+    val_ds = val_ds_fer.concatenate(val_ds_raf).concatenate(val_ds_aff)
+
+    # Batching + cache + prefetch la final
+    val_ds = val_ds.batch(BATCH_SIZE).cache().prefetch(tf.data.AUTOTUNE)
+
     tests = {
         "fer": aug_eval.flow_from_directory(TRUNCATED_DIR/"fer-plus"/"test", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                             classes=COMMON_CLASSES, class_mode="categorical", shuffle=False),
+                                             classes=COMMON_CLASSES, class_mode="sparse", shuffle=False),
         "raf": aug_eval.flow_from_directory(TRUNCATED_DIR/"rafdb"/"test", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                             classes=COMMON_CLASSES, class_mode="categorical", shuffle=False),
+                                             classes=COMMON_CLASSES, class_mode="sparse", shuffle=False),
         "affectnet": aug_eval.flow_from_directory(TRUNCATED_DIR/"affectnet"/"test", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                                   classes=COMMON_CLASSES, class_mode="categorical", shuffle=False)
+                                                   classes=COMMON_CLASSES, class_mode="sparse", shuffle=False)
     }
 
+    # Generatoare pentru antrenare
     gen_fer = aug_train.flow_from_directory(TRUNCATED_DIR/"fer-plus"/"train", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                           classes=COMMON_CLASSES, class_mode="categorical", shuffle=True)
+                                           classes=COMMON_CLASSES, class_mode="sparse", shuffle=True)
     gen_raf = aug_train.flow_from_directory(TRUNCATED_DIR/"rafdb"/"train", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                           classes=COMMON_CLASSES, class_mode="categorical", shuffle=True)
+                                           classes=COMMON_CLASSES, class_mode="sparse", shuffle=True)
     gen_aff = aug_train.flow_from_directory(TRUNCATED_DIR/"affectnet"/"train", target_size=IMG_SIZE, batch_size=BATCH_SIZE,
-                                           classes=COMMON_CLASSES, class_mode="categorical", shuffle=True)
+                                           classes=COMMON_CLASSES, class_mode="sparse", shuffle=True)
 
-    class Combined(tf.keras.utils.Sequence):
-        def __init__(self, gens):
-            self.gens, self.len_max = gens, max(len(g) for g in gens)
-        def __len__(self): return self.len_max * len(self.gens)
-        def __getitem__(self, idx):
-            g = self.gens[idx % len(self.gens)]
-            return g[(idx//len(self.gens)) % len(g)]
-        def on_epoch_end(self):
-            for g in self.gens: g.on_epoch_end()
+    # Calculăm numărul de pași per epocă bazat pe numărul real de imagini
+    global STEPS_PER_EPOCH
+    STEPS_PER_EPOCH = sum(len(g) for g in (gen_fer, gen_raf, gen_aff))
+    print(f"\n→ Calculăm STEPS_PER_EPOCH: {STEPS_PER_EPOCH} pași")
+    print(f"   ({(STEPS_PER_EPOCH * BATCH_SIZE):,} imagini per epocă)")
 
-    return Combined([gen_fer, gen_raf, gen_aff]), val_gen, tests, [gen_fer, gen_raf, gen_aff]
+    # Creăm dataset-uri tf.data pentru antrenare
+    datasets = [make_dataset(g) for g in (gen_fer, gen_raf, gen_aff)]
+    mixed_ds = tf.data.Dataset.sample_from_datasets(datasets, weights=[1/3, 1/3, 1/3])
+
+    # Creăm dataset-ul final pentru antrenare
+    balanced_ds = (
+        mixed_ds
+        .repeat()                                # nu se mai termină
+        .batch(BATCH_SIZE)
+        .prefetch(tf.data.AUTOTUNE)
+    )
+
+    # Verificăm forma datelor
+    print("\n→ Verificăm forma datelor...")
+    for img, label in balanced_ds.take(1):
+        print(f"   img.shape:  {img.shape}")   # ar trebui (8, 224, 224, 3)
+        print(f"   label.shape: {label.shape}") # ar trebui (8,)
+        print(f"   label.dtype: {label.dtype}") # ar trebui int32 sau int64
+
+    # Afișăm informații despre setul de validare
+    total_fer = tf.data.experimental.cardinality(make_dataset(val_gen_fer)).numpy()
+    total_raf = tf.data.experimental.cardinality(make_dataset(val_gen_raf)).numpy()
+    total_aff = tf.data.experimental.cardinality(make_dataset(val_gen_aff)).numpy()
+    print("\n→ Set de validare:")
+    print(f"   FER+/val: {total_fer} imagini")
+    print(f"   RAF/val: {total_raf} imagini")
+    print(f"   AffectNet/val: {total_aff} imagini")
+    print(f"   Total: {total_fer + total_raf + total_aff} imagini")
+
+    return balanced_ds, val_ds, tests, [gen_fer, gen_raf, gen_aff]
 
 
 def class_weights(gens):
@@ -105,14 +185,14 @@ def class_weights(gens):
 def build_model():
     """Construiește modelul Patt‑Lite cu MobileNet backbone"""
     inputs = keras.Input(shape=(*IMG_SIZE, 3), name="input")
-    x = keras.layers.experimental.preprocessing.Resizing(224, 224, name="resize")(inputs)
 
     backbone = keras.applications.MobileNet(
         input_shape=(224, 224, 3), include_top=False, weights="imagenet")
-    backbone._name = "mobilenet_backbone"
+    backbone_out = backbone.layers[-29].output    # 14×14
+    backbone = keras.Model(backbone.input, backbone_out, name="mobilenet_backbone")
     backbone.trainable = False
 
-    x = backbone(x, training=False)
+    x = backbone(inputs, training=False)
     x = keras.layers.SeparableConv2D(256, kernel_size=4, strides=4, padding="same", activation="relu")(x)
     x = keras.layers.SeparableConv2D(256, kernel_size=2, strides=2, padding="valid", activation="relu")(x)
     x = keras.layers.Conv2D(256, kernel_size=1, strides=1, padding="valid", activation="relu")(x)
@@ -133,13 +213,19 @@ def build_model():
 # ----------------------------------------------------------------------------
 
 def train():
-    train_gen, val_gen, tests, sub_gens = build_datagens()
-    cw = class_weights(sub_gens); print("\n→ Class‑weights:", cw)
+    train_gen, val_ds, tests, sub_gens = build_datagens()
+
+    # Calculăm ponderile claselor
+    weights = class_weights(sub_gens)
+    print("\n→ Ponderile claselor:")
+    for i, w in weights.items():
+        print(f"   {COMMON_CLASSES[i]:10s}: {w:.3f}")
 
     with strategy.scope():
         model = build_model()
         model.compile(optimizer=keras.optimizers.Adam(learning_rate=LR_HEAD, global_clipnorm=3.0),
-                      loss="categorical_crossentropy", metrics=["accuracy"])
+                      loss="sparse_categorical_crossentropy",
+                      metrics=["sparse_categorical_accuracy"])
 
     # Configurare TensorBoard
     log_dir = f"logs/{datetime.datetime.now():%Y%m%d-%H%M%S}"
@@ -152,17 +238,19 @@ def train():
         profile_batch=2
     )
 
+    # Faza 1: Head - folosim val_sparse_categorical_accuracy pentru monitorizare
     cb = [
-        keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=PATIENCE_ES, 
+        keras.callbacks.EarlyStopping(monitor="val_sparse_categorical_accuracy", patience=PATIENCE_ES, 
                                     min_delta=ES_LR_MIN_DELTA, restore_best_weights=True),
-        keras.callbacks.ReduceLROnPlateau(monitor="val_accuracy", patience=PATIENCE_LR,
-                                        min_delta=ES_LR_MIN_DELTA, min_lr=MIN_LR, verbose=1),
+        keras.callbacks.ReduceLROnPlateau(monitor="val_sparse_categorical_accuracy", factor=0.5,
+                                        patience=PATIENCE_LR, min_lr=MIN_LR),
         tensorboard_callback
     ]
 
     print("\n→ Faza 1: head…")
-    history = model.fit(train_gen, epochs=EPOCHS_HEAD, validation_data=val_gen, verbose=1,
-                      class_weight=cw, callbacks=cb)
+    history = model.fit(train_gen, epochs=EPOCHS_HEAD, validation_data=val_ds, verbose=1,
+                      steps_per_epoch=STEPS_PER_EPOCH, callbacks=cb,
+                      class_weight=weights)
 
     # Fine‑tune ultimele 59 straturi ale backbone‑ului
     print("\n→ Fine‑tuning…")
@@ -176,9 +264,17 @@ def train():
         if isinstance(layer, tf.keras.layers.BatchNormalization):
             layer.trainable = False
 
+    # Cosine Decay pentru learning rate în faza fine-tuning
+    decay_steps_fine = EPOCHS_FINE * STEPS_PER_EPOCH
+    lr_schedule_fine = keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=LR_FINE,   # 1e‑5
+        decay_steps=decay_steps_fine,
+        alpha=0.0)                       # ajunge la 0 la sfârşit
+
     with strategy.scope():
-        model.compile(optimizer=keras.optimizers.Adam(learning_rate=LR_FINE, global_clipnorm=3.0),
-                      loss="categorical_crossentropy", metrics=["accuracy"])
+        model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr_schedule_fine, global_clipnorm=3.0),
+                      loss="sparse_categorical_crossentropy",
+                      metrics=["sparse_categorical_accuracy"])
 
     # Configurare TensorBoard pentru fine-tuning
     log_dir_ft = f"logs/{datetime.datetime.now():%Y%m%d-%H%M%S}_ft"
@@ -191,15 +287,21 @@ def train():
         profile_batch=2
     )
 
+    # Faza 2: Fine-tune - folosim val_sparse_categorical_accuracy pentru că avem validare
     cb = [
-        keras.callbacks.EarlyStopping(monitor="accuracy", min_delta=ES_LR_MIN_DELTA, 
+        keras.callbacks.EarlyStopping(monitor="val_sparse_categorical_accuracy", min_delta=ES_LR_MIN_DELTA, 
                                     patience=PATIENCE_ES, restore_best_weights=True),
         tensorboard_callback_ft
     ]
 
+    # Calculăm epoca de start și finală pentru fine-tuning
+    start_ft = len(history.epoch)  # numărul efectiv de epoci rulate în faza 1
+    end_ft = start_ft + EPOCHS_FINE  # epoca finală pentru fine-tuning
+
     print("\n→ Faza 2: fine‑tune…")
-    model.fit(train_gen, epochs=EPOCHS_FINE, validation_data=val_gen, verbose=1,
-              initial_epoch=history.epoch[-PATIENCE_ES], class_weight=cw, callbacks=cb)
+    model.fit(train_gen, epochs=end_ft, validation_data=val_ds, verbose=1,
+              steps_per_epoch=STEPS_PER_EPOCH, initial_epoch=start_ft, callbacks=cb,
+              class_weight=weights)
 
     model.save(MODEL_DIR/"patt_lite_trained.h5")
     print("\n→ Evaluare finală:")
