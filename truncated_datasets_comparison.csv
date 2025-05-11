@@ -1,0 +1,9 @@
+,AffectNet,RAF-DB,FER+
+anger,1000,705,1000
+disgust,1000,717,191
+fear,1000,281,652
+happiness,1000,1000,1000
+neutral,1000,1000,1000
+sadness,1000,1000,1000
+surprise,1000,1000,1000
+TOTAL,7000,5703,5843

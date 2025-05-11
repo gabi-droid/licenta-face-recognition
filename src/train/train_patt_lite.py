@@ -318,9 +318,6 @@ def train():
         if isinstance(layer, tf.keras.layers.BatchNormalization):
             layer.trainable = False
 
-    # Construim noul model pentru fine-tuning
-    model = build_finetune_model(backbone, model)
-
     # InverseTimeDecay pentru learning rate în faza fine-tuning
     scheduler = keras.optimizers.schedules.InverseTimeDecay(
         initial_learning_rate=LR_FINE,
@@ -329,6 +326,9 @@ def train():
     )
 
     with strategy.scope():
+        # Construim noul model pentru fine-tuning
+        model = build_finetune_model(backbone, model)
+        
         model.compile(optimizer=keras.optimizers.Adam(learning_rate=scheduler, global_clipnorm=3.0),
                       loss="sparse_categorical_crossentropy",
                       metrics=["sparse_categorical_accuracy"])
