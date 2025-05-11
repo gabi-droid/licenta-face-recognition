@@ -1,89 +1,125 @@
-import pandas as pd
+import os
+import numpy as np
 import matplotlib.pyplot as plt
-from collections import Counter
 from pathlib import Path
-from scipy.spatial.distance import jensenshannon
+from collections import Counter
+import seaborn as sns
 
 # Configurare
-DATASETS = ["fer-plus", "rafdb", "affectnet"]
-SPLITS   = ["train", "val", "test"]
-CLASSES  = ["anger", "contempt", "disgust", "fear", "happiness", "neutral", "sadness", "surprise"]
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / "data"
+FORMATTED_DIRS = {
+    "FER+": DATA_DIR / "fer-plus_formatted",
+    "RAF": DATA_DIR / "rafdb_formatted",
+    "AffectNet": DATA_DIR / "affectnet_formatted"
+}
 
-def count_imgs(root):
-    """Numără imaginile per clasă într-un director"""
-    counts = Counter()
-    for cls in CLASSES:
-        counts[cls] += len(list((root/cls).glob("*.jpg")))
-    return counts
+COMMON_CLASSES = [
+    "anger", "disgust", "fear",
+    "happiness", "neutral", "sadness", "surprise"
+]
 
-def analyze_distributions():
-    """Analizează distribuțiile de imagini"""
-    # Colectăm datele
-    rows = []
-    for ds in DATASETS:
-        for sp in SPLITS:
-            root = Path("data/truncated")/ds/sp
-            if not root.exists():
-                print(f"Warning: {root} nu există")
-                continue
-                
-            cnt = count_imgs(root)
-            total = sum(cnt.values())
-            for emo in CLASSES:
-                rows.append({
-                    "dataset": ds, "split": sp, "emotion": emo,
-                    "count": cnt[emo], "pct": cnt[emo]/total if total else 0
-                })
+SPLITS = ["train", "val", "test"]
 
-    # Creăm DataFrame-ul
-    df = pd.DataFrame(rows)
+def analyze_dataset(dataset_path: Path, dataset_name: str):
+    """Analizează distribuția claselor într-un dataset"""
+    print(f"\nAnalizăm {dataset_name}...")
     
-    # 1. Distribuția per dataset și split (procente)
-    print("\n1. Distribuția per dataset și split (procente):")
-    pivot = df.pivot_table(index=["dataset", "split"], columns="emotion",
-                          values="pct", fill_value=0)
-    print(pivot.round(3))
+    # Verificăm dacă directorul există
+    if not dataset_path.exists():
+        print(f"  ⚠️  Directorul {dataset_path} nu există!")
+        return None
     
-    # 1b. Distribuția per dataset și split (numere brute)
-    print("\n1b. Distribuția per dataset și split (numere brute):")
-    pivot_counts = df.pivot_table(index=["dataset", "split"], columns="emotion",
-                                values="count", fill_value=0)
-    print(pivot_counts)
-    
-    # 2. Distribuția globală train vs val vs test
-    print("\n2. Distribuția globală train vs val vs test:")
-    global_dist = df.groupby(["split", "emotion"])["count"].sum()
-    global_dist = global_dist.unstack(level=0)
-    
-    # Calculăm procentele pentru fiecare split
+    # Analizăm fiecare split
+    split_counts = {}
     for split in SPLITS:
-        if split in global_dist.columns:
-            total = global_dist[split].sum()
-            global_dist[f"{split}_pct"] = global_dist[split] / total
+        split_path = dataset_path / split
+        if not split_path.exists():
+            print(f"  ⚠️  Split-ul {split} nu există în {dataset_name}")
+            continue
+            
+        # Numărăm imaginile per clasă
+        class_counts = Counter()
+        total_images = 0
+        
+        for class_name in COMMON_CLASSES:
+            class_dir = split_path / class_name
+            if class_dir.exists():
+                n_images = len(list(class_dir.glob("*.jpg")))
+                class_counts[class_name] = n_images
+                total_images += n_images
+            else:
+                print(f"  ⚠️  Directorul {class_name} nu există în {dataset_name}/{split}")
+        
+        if total_images > 0:
+            split_counts[split] = class_counts
+            print(f"\nStatistici {dataset_name}/{split}:")
+            print(f"  Total imagini: {total_images}")
+            print("\nDistribuția claselor:")
+            for class_name in COMMON_CLASSES:
+                count = class_counts[class_name]
+                percentage = (count / total_images) * 100
+                print(f"  {class_name:10s}: {count:5d} imagini ({percentage:5.1f}%)")
     
-    # Afișăm procentele
-    pct_cols = [f"{split}_pct" for split in SPLITS if f"{split}_pct" in global_dist.columns]
-    print(global_dist[pct_cols].round(3))
+    return split_counts
+
+def plot_distributions(all_counts):
+    """Generează un plot pentru distribuțiile claselor"""
+    # Setăm stilul
+    sns.set_style("whitegrid")
+    plt.rcParams.update({'font.size': 12})
     
-    # Calculăm divergența Jensen-Shannon între distribuții
-    if "train_pct" in global_dist.columns and "val_pct" in global_dist.columns:
-        js_train_val = jensenshannon(global_dist["train_pct"], global_dist["val_pct"])
-        print(f"\nJensen-Shannon distance train-val: {js_train_val:.3f}")
+    # Creăm subplot-uri pentru fiecare split
+    fig, axes = plt.subplots(len(SPLITS), 2, figsize=(15, 5*len(SPLITS)))
     
-    if "train_pct" in global_dist.columns and "test_pct" in global_dist.columns:
-        js_train_test = jensenshannon(global_dist["train_pct"], global_dist["test_pct"])
-        print(f"Jensen-Shannon distance train-test: {js_train_test:.3f}")
+    for i, split in enumerate(SPLITS):
+        ax1, ax2 = axes[i]
+        
+        # Plot 1: Bar plot pentru numărul absolut de imagini
+        x = np.arange(len(COMMON_CLASSES))
+        width = 0.25
+        
+        for j, (dataset_name, split_counts) in enumerate(all_counts.items()):
+            if split in split_counts:
+                values = [split_counts[split][cls] for cls in COMMON_CLASSES]
+                ax1.bar(x + j*width, values, width, label=dataset_name)
+        
+        ax1.set_ylabel('Număr de imagini')
+        ax1.set_title(f'Distribuția claselor în {split} set')
+        ax1.set_xticks(x + width)
+        ax1.set_xticklabels(COMMON_CLASSES, rotation=45)
+        ax1.legend()
+        
+        # Plot 2: Line plot pentru procente
+        for dataset_name, split_counts in all_counts.items():
+            if split in split_counts:
+                counts = split_counts[split]
+                total = sum(counts.values())
+                percentages = [counts[cls]/total * 100 for cls in COMMON_CLASSES]
+                ax2.plot(COMMON_CLASSES, percentages, marker='o', label=dataset_name)
+        
+        ax2.set_ylabel('Procent (%)')
+        ax2.set_title(f'Distribuția procentuală în {split} set')
+        ax2.set_xticklabels(COMMON_CLASSES, rotation=45)
+        ax2.legend()
     
-    # 3. Plot distribuția globală
-    plt.figure(figsize=(12, 6))
-    global_dist[pct_cols].plot(kind="bar")
-    plt.title("Distribuția globală train vs val vs test")
-    plt.xlabel("Emoție")
-    plt.ylabel("Procent")
-    plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig("distribution_analysis.png")
-    print("\nPlot salvat în distribution_analysis.png")
+    plt.savefig('class_distributions.png')
+    print("\nPlot salvat în 'class_distributions.png'")
+
+def main():
+    print("Analizăm distribuția claselor în dataset-urile formatate...")
+    
+    all_counts = {}
+    for dataset_name, dataset_path in FORMATTED_DIRS.items():
+        split_counts = analyze_dataset(dataset_path, dataset_name)
+        if split_counts:
+            all_counts[dataset_name] = split_counts
+    
+    if all_counts:
+        plot_distributions(all_counts)
+    else:
+        print("\n⚠️  Nu s-au găsit date pentru analiză!")
 
 if __name__ == "__main__":
-    analyze_distributions() 
+    main() 
